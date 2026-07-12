@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 import duckdb
+from src.rag import perguntar_ao_caderno
 
 # Inicializa a aplicação FastAPI
 app = FastAPI(title="SmartSite-Analytics API")
@@ -31,3 +32,13 @@ def obter_alertas():
     
     # 4. Devolver o resultado
     return {"alertas": resultado}
+
+@app.get("/chat")
+def chat_obra(pergunta: str):
+    """Rota que recebe uma pergunta por texto e responde usando o RAG do Groq"""
+    resposta_ia = perguntar_ao_caderno(pergunta)
+
+    return {
+        "pergunta": pergunta,
+        "resposta_ia": resposta_ia
+    }

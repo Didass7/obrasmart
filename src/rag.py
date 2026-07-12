@@ -48,7 +48,7 @@ def perguntar_ao_caderno(pergunta: str):
     db = Chroma(persist_directory=PASTA_VETORIAL, embedding_function=embeddings)
     
     # 2. RETRIEVAL: Procura no ChromaDB os 2 pedaços de texto mais parecidos com a pergunta
-    print(f"🔍 A pesquisar contexto para: '{pergunta}'...")
+    print(f"A pesquisar contexto para: '{pergunta}'...")
     documentos_proximos = db.similarity_search(pergunta, k=2)
 
     # Junta os pedaços encontrados numa única string de contexto
@@ -89,5 +89,5 @@ if __name__ == "__main__":
     
     # Teste de pergunta
     print("\nA testar o cérebro da IA...")
-    resposta_teste = perguntar_ao_caderno("Qual é o isolamento planeado para o Piso 2?")
+    resposta_teste = perguntar_ao_caderno("Qual é o progresso do Piso 2?")
     print(f"\nResposta da IA:\n{resposta_teste}")
