@@ -17,23 +17,19 @@ def home():
 # converter para dicionário e devolver.
 
 @app.get("/alertas")
-def obter_alertas():
-    # 1. Ligar ao DuckDB
+def obtener_alertas():
     con = duckdb.connect("data/obrasmart.db")
     
-    # 2. Executar a Query SQL (Tenta escrever o SELECT aqui)
+    # Query corrigida e limpa (sem linhas duplicadas ou comentários perdidos)
     query = """
         SELECT timestamp, piso, zona, atividade, progresso_atual, prioridade_revisao, responsavel
         FROM 'data/consolidado.parquet'
         QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY id_obra, piso, zona, activity_ou_atividade 
-            DISTINCT FROM NULL  -- (Ajusta os campos conforme o teu agrupamento)
             PARTITION BY id_obra, piso, zona, atividade 
             ORDER BY timestamp DESC
         ) = 1
     """
     
-    # O DuckDB permite transformar o resultado diretamente num dicionário que a API adora:
     df = con.execute(query).df()
     resultado = df[df['prioridade_revisao'] == 'ALTA'].to_dict(orient="records")
     con.close()
