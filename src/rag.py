@@ -1,93 +1,89 @@
 import os
+import duckdb
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 
-# 1. Carregar a chave do Groq que guardaste no ficheiro .env
 load_dotenv()
 
-# Configuração de caminhos e modelos
-PASTA_VETORIAL = "data/chroma_db"
-FICHEIRO_REGRAS = "caderno_de_encargos.txt"
+DIRETORIO_ATUAL = os.path.dirname(os.path.abspath(__file__))
+RAIZ_PROJETO = os.path.dirname(DIRETORIO_ATUAL)
 
-# Usamos um modelo gratuito da HuggingFace que corre 100% local no teu PC para traduzir texto em números (embeddings)
+PASTA_VETORIAL = os.path.join(RAIZ_PROJETO, "data", "chroma_db")
+FICHEIRO_REGRAS = os.path.join(RAIZ_PROJETO, "caderno_de_encargos.txt")
+CAMINHO_PARQUET = os.path.join(RAIZ_PROJETO, "data", "consolidado.parquet")
+
 print("A carregar o modelo de Embeddings local (HuggingFace)...")
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 def inicializar_base_vetorial():
-    """Lê o caderno de encargos, faz o chunking, gera embeddings e guarda no ChromaDB."""
+    """Lê o caderno de encargos e grava no ChromaDB (Mantém-se igual)."""
     if not os.path.exists(FICHEIRO_REGRAS):
-        print(f"Ficheiro {FICHEIRO_REGRAS} não encontrado!")
         return
-
-    print("A ler o Caderno de Encargos...")
     with open(FICHEIRO_REGRAS, "r", encoding="utf-8") as f:
         texto_completo = f.read()
-
-    # CHUNKING: O 'RecursiveCharacterTextSplitter' divide o texto de forma inteligente,
-    # tentando não cortar frases a meio (olha para parágrafos, pontos e espaços).
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
     pedacos_texto = text_splitter.split_text(texto_completo)
-    print(f"Texto dividido em {len(pedacos_texto)} pedaços (chunks).")
-
-    # GUARDAR NO CHROMADB: Pega nos pedaços, passa-os pelo modelo de embeddings e guarda no disco
-    print("A gravar os vetores no ChromaDB...")
-    db = Chroma.from_texts(
-        texts=pedacos_texto, 
-        embedding=embeddings, 
-        persist_directory=PASTA_VETORIAL
-    )
-    print("Base de dados vetorial criada com sucesso!")
+    db = Chroma.from_texts(texts=pedacos_texto, embedding=embeddings, persist_directory=PASTA_VETORIAL)
     return db
 
-def perguntar_ao_caderno(pergunta: str):
-    """Procura o contexto no ChromaDB e pede ao Groq para responder."""
-    # 1. Ligar ao ChromaDB existente no disco
-    db = Chroma(persist_directory=PASTA_VETORIAL, embedding_function=embeddings)
+def obter_status_tempo_real():
+    if not os.path.exists(CAMINHO_PARQUET):
+        return "Nenhum dado de progresso em tempo real disponível ainda."
     
-    # 2. RETRIEVAL: Procura no ChromaDB os 2 pedaços de texto mais parecidos com a pergunta
-    print(f"A pesquisar contexto para: '{pergunta}'...")
-    documentos_proximos = db.similarity_search(pergunta, k=2)
+    con = duckdb.connect(os.path.join(RAIZ_PROJETO, "data", "obrasmart.db"))
+    
+    # Traz apenas o estado mais recente de cada atividade da obra
+    query = """
+        SELECT piso, zona, atividade, progresso_atual, prioridade_revisao 
+        FROM 'data/consolidado.parquet'
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY id_obra, piso, zona, atividade 
+            ORDER BY timestamp DESC
+        ) = 1
+    """
+    linhas = con.execute(query).fetchall()
+    con.close()
+    
+    texto_status = ""
+    for l in linhas:
+        texto_status += f"- {l[2]} no {l[0]} ({l[1]}): Progresso atual de {l[3]}%. Prioridade de Revisão: {l[4]}.\n"
+    return texto_status
 
-    # Junta os pedaços encontrados numa única string de contexto
-    contexto = "\n".join([doc.page_content for doc in documentos_proximos])
+def perguntar_ao_caderno(pergunta: str):
+    """Procura o contexto no ChromaDB + Dados do DuckDB e envia para o Groq."""
+    db = Chroma(persist_directory=PASTA_VETORIAL, embedding_function=embeddings)
+    documentos_proximos = db.similarity_search(pergunta, k=2)
+    contexto_regras = "\n".join([doc.page_content for doc in documentos_proximos])
     
-    # === ADICIONA ESTAS LINHAS DE DEBUG AQUI: ===
-    print("\n📦 [DEBUG] CONTEXTO ENVIADO PARA A IA:")
-    print(contexto if contexto else "🚨 ALERTA: O contexto está VAZIO!")
-    print("-" * 40 + "\n")
-    # ============================================
+    # 1. Procurar os dados analíticos gerados pelo teu pipeline
+    contexto_dados_live = obter_status_tempo_real()
     
-    # 3. Inicializar o Groq (Llama 3) usando a chave do .env
     llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.2)
     
-    # 4. PROMPT ENGINEERING: Construímos a instrução exata para a IA não inventar
+    # 2. PROMPT HÍBRIDO: Entregamos as regras E o estado atual dos dados à IA
     prompt = f"""
     És um Engenheiro Fiscalizador de uma obra de construção civil. 
-    Responde à pergunta do utilizador utilizando APENAS o contexto fornecido abaixo.
-    Se não souberes a resposta com base no contexto, diz explicitamente que a informação não consta no caderno de encargos.
+    Responde à pergunta do utilizador cruzando as REGRAS DO CADERNO DE ENCARGOS com o ESTADO ATUAL EM TEMPO REAL.
 
-    CONTEXTO DA OBRA:
-    {contexto}
+    [DOCUMENTO] REGRAS DO CADERNO DE ENCARGOS:
+    {contexto_regras}
 
-    PERGUNTA:
+    [BASE DE DADOS] ESTADO ATUAL DA OBRA EM TEMPO REAL:
+    {contexto_dados_live}
+
+    PERGUNTA DO UTILIZADOR:
     {pergunta}
 
-    RESPOSTA (em português de Portugal):
+    RESPOSTA COMPLETA (Cruza os dados com as regras se necessário. Em português de Portugal):
     """
     
-    # 5. Envia para o Groq e recebe a resposta
     resposta = llm.invoke(prompt)
     return resposta.content
 
-# Bloco de teste rápido
 if __name__ == "__main__":
-    # Primeiro criamos a base de dados vetorial
     inicializar_base_vetorial()
-    
-    # Teste de pergunta
-    print("\nA testar o cérebro da IA...")
-    resposta_teste = perguntar_ao_caderno("Qual é o progresso do Piso 2?")
-    print(f"\nResposta da IA:\n{resposta_teste}")
+    # Teste rápido cruzando dados
+    print(perguntar_ao_caderno("O isolamento do Piso 2 cumpre as regras e está a avançar bem?"))

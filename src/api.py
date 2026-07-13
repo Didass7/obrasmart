@@ -22,15 +22,21 @@ def obter_alertas():
     con = duckdb.connect("data/obrasmart.db")
     
     # 2. Executar a Query SQL (Tenta escrever o SELECT aqui)
-    query = "SELECT * FROM 'data/consolidado.parquet' WHERE prioridade_revisao = 'ALTA'"
+    query = """
+        SELECT timestamp, piso, zona, atividade, progresso_atual, prioridade_revisao, responsavel
+        FROM 'data/consolidado.parquet'
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY id_obra, piso, zona, activity_ou_atividade 
+            DISTINCT FROM NULL  -- (Ajusta os campos conforme o teu agrupamento)
+            PARTITION BY id_obra, piso, zona, atividade 
+            ORDER BY timestamp DESC
+        ) = 1
+    """
     
     # O DuckDB permite transformar o resultado diretamente num dicionário que a API adora:
-    resultado = con.execute(query).df().to_dict(orient="records")
-    
-    # 3. Fechar a ligação
+    df = con.execute(query).df()
+    resultado = df[df['prioridade_revisao'] == 'ALTA'].to_dict(orient="records")
     con.close()
-    
-    # 4. Devolver o resultado
     return {"alertas": resultado}
 
 @app.get("/chat")
